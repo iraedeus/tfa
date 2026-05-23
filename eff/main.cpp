@@ -1,10 +1,10 @@
 #include <QApplication>
-#include <QFormLayout>
+#include <QFrame>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QMessageBox>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QSplitter>
@@ -13,7 +13,6 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
-#include <algorithm>
 #include <iostream>
 #include <map>
 #include <set>
@@ -22,17 +21,17 @@
 #include <vector>
 
 // ============================================================================
-// БЭКЕНД: ЛОГИКА ГРАММАТИКИ
+// БЭКЕНД: СТРОГАЯ МАТЕМАТИЧЕСКАЯ ЛОГИКА (FIRST_k и EFF_k)
 // ============================================================================
 
 using Symbol = std::string;
-using Rule = std::vector<Symbol>;
-using SymbolSet = std::set<std::string>;
+using Chain = std::vector<Symbol>;
+using ChainSet = std::set<Chain>;
 
 struct Grammar {
   std::set<Symbol> VN;
   std::set<Symbol> VT;
-  std::map<Symbol, std::vector<Rule>> P;
+  std::map<Symbol, std::vector<Chain>> P;
   Symbol S;
 
   bool is_terminal(const Symbol &sym) const {
@@ -40,97 +39,115 @@ struct Grammar {
   }
 };
 
-SymbolSet truncate_concat(const SymbolSet &set1, const SymbolSet &set2,
-                          size_t k) {
-  if (set1.empty())
-    return set2;
-  if (set2.empty())
-    return set1;
+ChainSet truncate_concat(const ChainSet &s1, const ChainSet &s2, size_t k) {
+  if (s1.empty() || s2.empty())
+    return {};
+  ChainSet res;
+  for (const auto &c1 : s1) {
+    for (const auto &c2 : s2) {
+      Chain comb;
+      for (const auto &sym : c1)
+        if (sym != "eps")
+          comb.push_back(sym);
+      for (const auto &sym : c2)
+        if (sym != "eps")
+          comb.push_back(sym);
 
-  SymbolSet result;
-  for (const auto &s1 : set1) {
-    for (const auto &s2 : set2) {
-      std::string combined = (s1 == "eps" ? "" : s1) + (s2 == "eps" ? "" : s2);
-      if (combined.empty()) {
-        result.insert("eps");
+      if (comb.empty()) {
+        res.insert({"eps"});
       } else {
-        if (combined.length() > k) {
-          result.insert(combined.substr(0, k));
-        } else {
-          result.insert(combined);
+        if (comb.size() > k)
+          comb.resize(k);
+        res.insert(comb);
+      }
+    }
+  }
+  return res;
+}
+
+class LogicEngine {
+public:
+  std::map<Symbol, ChainSet> FIRST;
+  std::map<Symbol, ChainSet> EFF;
+  Grammar g;
+  size_t k;
+
+  LogicEngine(const Grammar &grammar, size_t length) : g(grammar), k(length) {}
+
+  void compute() {
+    compute_FIRST();
+    compute_EFF();
+  }
+
+  ChainSet get_eff_for_alpha(const Chain &alpha) {
+    if (alpha.empty() || (alpha.size() == 1 && alpha[0] == "eps"))
+      return {{"eps"}};
+
+    ChainSet res = EFF.at(alpha[0]);
+    for (size_t i = 1; i < alpha.size(); ++i) {
+      res = truncate_concat(res, FIRST.at(alpha[i]), k);
+    }
+    return res;
+  }
+
+private:
+  void compute_FIRST() {
+    for (const auto &t : g.VT)
+      FIRST[t] = {{t}};
+    FIRST["eps"] = {{"eps"}};
+    for (const auto &n : g.VN)
+      FIRST[n] = {};
+
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      for (const auto &n : g.VN) {
+        if (!g.P.count(n))
+          continue;
+        for (const auto &rule : g.P.at(n)) {
+          ChainSet current = {{"eps"}};
+          for (const auto &sym : rule) {
+            current = truncate_concat(current, FIRST[sym], k);
+          }
+          for (const auto &c : current) {
+            if (FIRST[n].insert(c).second)
+              changed = true;
+          }
         }
       }
     }
   }
-  return result;
-}
 
-SymbolSet get_FIRST_chain(const Rule &alpha, const Grammar &g, size_t k);
+  void compute_EFF() {
+    for (const auto &t : g.VT)
+      EFF[t] = {{t}};
+    EFF["eps"] = {{"eps"}};
+    for (const auto &n : g.VN)
+      EFF[n] = {};
 
-SymbolSet get_FIRST_sym(const Symbol &sym, const Grammar &g, size_t k) {
-  SymbolSet result;
-  if (g.is_terminal(sym)) {
-    result.insert(sym);
-    return result;
-  }
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      for (const auto &n : g.VN) {
+        if (!g.P.count(n))
+          continue;
+        for (const auto &rule : g.P.at(n)) {
+          if (rule.size() == 1 && rule[0] == "eps")
+            continue;
 
-  if (g.P.count(sym)) {
-    for (const auto &rule : g.P.at(sym)) {
-      auto rule_first = get_FIRST_chain(rule, g, k);
-      result.insert(rule_first.begin(), rule_first.end());
-    }
-  }
-  return result;
-}
-
-SymbolSet get_FIRST_chain(const Rule &alpha, const Grammar &g, size_t k) {
-  if (alpha.empty())
-    return {"eps"};
-
-  SymbolSet result = get_FIRST_sym(alpha[0], g, k);
-
-  for (size_t i = 1; i < alpha.size(); ++i) {
-    if (result.count("eps")) {
-      result.erase("eps");
-      SymbolSet next_first = get_FIRST_sym(alpha[i], g, k);
-      result = truncate_concat(result, next_first, k);
-      if (get_FIRST_sym(alpha[i], g, k).count("eps")) {
-        result.insert("eps");
+          ChainSet current = EFF[rule[0]];
+          for (size_t i = 1; i < rule.size(); ++i) {
+            current = truncate_concat(current, FIRST[rule[i]], k);
+          }
+          for (const auto &c : current) {
+            if (EFF[n].insert(c).second)
+              changed = true;
+          }
+        }
       }
-    } else {
-      break;
     }
   }
-  return result;
-}
-
-SymbolSet get_EFF(const Rule &alpha, const Grammar &g, size_t k) {
-  SymbolSet result;
-  if (alpha.empty())
-    return result;
-
-  Symbol first_sym = alpha[0];
-
-  if (g.is_terminal(first_sym)) {
-    return get_FIRST_chain(alpha, g, k);
-  }
-
-  Rule gamma(alpha.begin() + 1, alpha.end());
-
-  if (g.P.count(first_sym)) {
-    for (const auto &prod : g.P.at(first_sym)) {
-      if (prod.size() == 1 && prod[0] == "eps") {
-        continue;
-      }
-      Rule current_chain = prod;
-      current_chain.insert(current_chain.end(), gamma.begin(), gamma.end());
-
-      SymbolSet first_of_chain = get_FIRST_chain(current_chain, g, k);
-      result.insert(first_of_chain.begin(), first_of_chain.end());
-    }
-  }
-  return result;
-}
+};
 
 std::string trim(const std::string &str) {
   size_t first = str.find_first_not_of(" \t\r\n");
@@ -150,7 +167,7 @@ bool parseRules(const std::string &text, Grammar &g, std::string &errorMsg) {
 
     size_t arrowPos = line.find("->");
     if (arrowPos == std::string::npos) {
-      errorMsg = "Неверный формат правила (пропущено '->'): " + line;
+      errorMsg = "Ошибка синтаксиса: пропущено '->' в правиле: " + line;
       return false;
     }
 
@@ -173,27 +190,26 @@ bool parseRules(const std::string &text, Grammar &g, std::string &errorMsg) {
 
       std::stringstream tss(alternative);
       std::string token;
-      Rule rule;
+      Chain rule;
       while (tss >> token) {
         rule.push_back(token);
       }
-      if (!rule.empty()) {
+      if (!rule.empty())
         g.P[left].push_back(rule);
-      }
     }
   }
   return true;
 }
 
 // ============================================================================
-// ФРОНТЕНД: ИНТЕРФЕЙС НА QT
+// ФРОНТЕНД: СОВРЕМЕННЫЙ ИНТЕРФЕЙС НА QT
 // ============================================================================
 
 class GrammarApp : public QWidget {
 public:
   GrammarApp(QWidget *parent = nullptr) : QWidget(parent) {
-    setWindowTitle("LR(k) Анализ: Функция EFF_k(α)");
-    resize(900, 600);
+    setWindowTitle("LR(k) Анализатор: Функция EFF_k(α)");
+    resize(950, 650);
     setupUI();
     applyStyles();
   }
@@ -206,141 +222,182 @@ private:
   QSpinBox *spinK;
   QLineEdit *inputAlpha;
   QPushButton *btnCalculate;
+  QLabel *errorLabel;
 
   QTextEdit *textResult;
   QTextEdit *textLog;
 
   void setupUI() {
     QHBoxLayout *mainLayout = new QHBoxLayout(this);
-    mainLayout->setContentsMargins(10, 10, 10, 10);
+    mainLayout->setContentsMargins(15, 15, 15, 15);
+    mainLayout->setSpacing(15);
 
     QSplitter *splitter = new QSplitter(Qt::Horizontal);
 
-    // --- ЛЕВАЯ ПАНЕЛЬ (Ввод данных) ---
+    // --- ЛЕВАЯ ПАНЕЛЬ ---
     QWidget *leftPanel = new QWidget();
     QVBoxLayout *leftLayout = new QVBoxLayout(leftPanel);
     leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setSpacing(12);
 
-    // Блок 1: Алфавит
+    // Блок 1: Алфавит (надежная сетка QGridLayout)
     QGroupBox *groupAlphabet = new QGroupBox("Алфавит грамматики");
-    QFormLayout *formAlphabet = new QFormLayout(groupAlphabet);
-    inputVT = new QLineEdit("a b c");
-    inputVN = new QLineEdit("S A B C");
-    inputS = new QLineEdit("S");
-    formAlphabet->addRow("Терминалы (V_T):", inputVT);
-    formAlphabet->addRow("Нетерминалы (V_N):", inputVN);
-    formAlphabet->addRow("Стартовый (S):", inputS);
+    QGridLayout *gridAlphabet = new QGridLayout(groupAlphabet);
+    gridAlphabet->setContentsMargins(15, 20, 15, 15);
+    gridAlphabet->setSpacing(10);
+
+    QLabel *labelVT = new QLabel("V_T (Терминалы):");
+    QLabel *labelVN = new QLabel("V_N (Нетерминалы):");
+    QLabel *labelS = new QLabel("S (Аксиома):");
+
+    inputVT = new QLineEdit();
+    inputVT->setPlaceholderText("Например: a b c");
+    inputVN = new QLineEdit();
+    inputVN->setPlaceholderText("Например: S A B C");
+    inputS = new QLineEdit();
+    inputS->setPlaceholderText("Например: S");
+
+    gridAlphabet->addWidget(labelVT, 0, 0, Qt::AlignVCenter | Qt::AlignLeft);
+    gridAlphabet->addWidget(inputVT, 0, 1);
+    gridAlphabet->addWidget(labelVN, 1, 0, Qt::AlignVCenter | Qt::AlignLeft);
+    gridAlphabet->addWidget(inputVN, 1, 1);
+    gridAlphabet->addWidget(labelS, 2, 0, Qt::AlignVCenter | Qt::AlignLeft);
+    gridAlphabet->addWidget(inputS, 2, 1);
+    gridAlphabet->setColumnStretch(1, 1);
 
     // Блок 2: Правила вывода
     QGroupBox *groupRules = new QGroupBox("Правила вывода (P)");
     QVBoxLayout *layoutRules = new QVBoxLayout(groupRules);
+    layoutRules->setContentsMargins(15, 20, 15, 15);
     inputRules = new QTextEdit();
     inputRules->setFontFamily("Consolas");
-    inputRules->setPlaceholderText("Пример:\nS -> A B\nA -> B a | eps");
-    inputRules->setText("S -> A B\nA -> B a | eps\nB -> C b | C\nC -> c | eps");
+    inputRules->setPlaceholderText("S -> A B\nA -> B a | eps");
     layoutRules->addWidget(inputRules);
 
     // Блок 3: Параметры анализа
-    QGroupBox *groupParams = new QGroupBox("Параметры анализа");
-    QFormLayout *formParams = new QFormLayout(groupParams);
+    QGroupBox *groupParams = new QGroupBox("Параметры функции EFF");
+    QGridLayout *gridParams = new QGridLayout(groupParams);
+    gridParams->setContentsMargins(15, 20, 15, 15);
+    gridParams->setSpacing(10);
+
+    QLabel *labelK = new QLabel("Длина k:");
+    QLabel *labelAlpha = new QLabel("Цепочка α:");
+
     spinK = new QSpinBox();
     spinK->setRange(1, 10);
     spinK->setValue(2);
-    inputAlpha = new QLineEdit("S");
-    formParams->addRow("Длина префикса (k):", spinK);
-    formParams->addRow("Цепочка α:", inputAlpha);
+    inputAlpha = new QLineEdit();
+    inputAlpha->setPlaceholderText("Например: A b");
 
-    btnCalculate = new QPushButton("Вычислить EFF_k(α)");
+    gridParams->addWidget(labelK, 0, 0, Qt::AlignVCenter | Qt::AlignLeft);
+    gridParams->addWidget(spinK, 0, 1);
+    gridParams->addWidget(labelAlpha, 1, 0, Qt::AlignVCenter | Qt::AlignLeft);
+    gridParams->addWidget(inputAlpha, 1, 1);
+    gridParams->setColumnStretch(1, 1);
+
+    errorLabel = new QLabel("");
+    errorLabel->setStyleSheet("color: #dc3545; font-weight: bold;");
+    errorLabel->setWordWrap(true);
+    errorLabel->hide();
+
+    btnCalculate = new QPushButton("Рассчитать EFF_k(α)");
     btnCalculate->setCursor(Qt::PointingHandCursor);
 
     leftLayout->addWidget(groupAlphabet);
-    leftLayout->addWidget(groupRules, 1); // Тянется
+    leftLayout->addWidget(groupRules, 1);
     leftLayout->addWidget(groupParams);
+    leftLayout->addWidget(errorLabel);
     leftLayout->addWidget(btnCalculate);
 
-    // --- ПРАВАЯ ПАНЕЛЬ (Результаты) ---
+    // --- ПРАВАЯ ПАНЕЛЬ ---
     QTabWidget *tabWidget = new QTabWidget();
 
     textResult = new QTextEdit();
     textResult->setReadOnly(true);
-    textResult->setFontPointSize(14);
-    tabWidget->addTab(textResult, "Результат вычисления");
+    tabWidget->addTab(textResult, "Результат EFF_k");
 
     textLog = new QTextEdit();
     textLog->setReadOnly(true);
-    textLog->setFontFamily("Consolas");
-    tabWidget->addTab(textLog, "Лог парсинга грамматики");
+    tabWidget->addTab(textLog, "Детальный лог");
 
-    // Добавляем панели в сплиттер
     splitter->addWidget(leftPanel);
     splitter->addWidget(tabWidget);
-    splitter->setSizes({350, 550}); // Пропорции по умолчанию
+    splitter->setSizes({400, 550});
 
     mainLayout->addWidget(splitter);
 
     connect(btnCalculate, &QPushButton::clicked, this,
             &GrammarApp::onCalculate);
+
+    inputVT->setText("a b c");
+    inputVN->setText("S A B C");
+    inputS->setText("S");
+    inputRules->setText("S -> A B\nA -> B a | eps\nB -> C b | C\nC -> c | eps");
+    inputAlpha->setText("A C");
   }
 
   void applyStyles() {
-    // Светлая тема с акцентами (как в ваших отчетах)
     QString style = R"(
             QWidget {
                 background-color: #F8F9FA;
-                font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+                font-family: "Segoe UI", Arial, sans-serif;
                 font-size: 13px;
                 color: #212529;
+            }
+            QLabel {
+                font-weight: normal;
+                color: #495057;
+                padding-right: 5px;
             }
             QGroupBox {
                 background-color: #FFFFFF;
                 border: 1px solid #DEE2E6;
                 border-radius: 6px;
-                margin-top: 12px;
-                padding-top: 10px;
+                margin-top: 18px; /* Достаточно места для заголовка */
                 font-weight: bold;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
+                left: 15px;
+                top: 0px;
                 padding: 0 5px;
-                color: #495057;
+                color: #0d6efd;
             }
             QLineEdit, QTextEdit, QSpinBox {
                 background-color: #FFFFFF;
                 border: 1px solid #CED4DA;
                 border-radius: 4px;
-                padding: 4px;
+                padding: 6px;
+                selection-background-color: #0d6efd;
             }
             QLineEdit:focus, QTextEdit:focus, QSpinBox:focus {
-                border: 1px solid #80BDFF;
+                border: 1px solid #86b7fe;
             }
             QPushButton {
                 background-color: #0d6efd;
                 color: white;
                 font-weight: bold;
                 border: none;
-                border-radius: 4px;
-                padding: 10px;
+                border-radius: 6px;
+                padding: 12px;
                 font-size: 14px;
             }
-            QPushButton:hover {
-                background-color: #0b5ed7;
-            }
-            QPushButton:pressed {
-                background-color: #0a58ca;
-            }
+            QPushButton:hover { background-color: #0b5ed7; }
+            QPushButton:pressed { background-color: #0a58ca; }
             QTabWidget::pane {
                 border: 1px solid #DEE2E6;
                 background: white;
-                border-radius: 4px;
+                border-radius: 6px;
             }
             QTabBar::tab {
                 background: #E9ECEF;
                 border: 1px solid #DEE2E6;
-                padding: 8px 16px;
+                padding: 10px 20px;
                 margin-right: 2px;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+                color: #495057;
             }
             QTabBar::tab:selected {
                 background: #FFFFFF;
@@ -350,17 +407,43 @@ private:
             }
             QSplitter::handle {
                 background-color: #DEE2E6;
-                width: 2px;
+                width: 3px;
+                margin: 0 5px;
             }
         )";
     this->setStyleSheet(style);
   }
 
+  void showError(const std::string &msg) {
+    errorLabel->setText(QString::fromStdString("⚠ " + msg));
+    errorLabel->show();
+  }
+
+  QString printChainSet(const ChainSet &s) {
+    if (s.empty())
+      return "&empty;";
+    QString res;
+    bool first = true;
+    for (const auto &chain : s) {
+      if (!first)
+        res += ", ";
+      QString cStr;
+      for (const auto &sym : chain)
+        cStr += QString::fromStdString(sym);
+      if (cStr.isEmpty())
+        cStr = "&epsilon;";
+      res += "<span style='color: #198754; font-weight: bold;'>" + cStr +
+             "</span>";
+      first = false;
+    }
+    return res;
+  }
+
   void onCalculate() {
+    errorLabel->hide();
     Grammar g;
     std::string errorMsg;
 
-    // Парсинг алфавита
     std::stringstream ssVT(inputVT->text().toStdString());
     std::string token;
     while (ssVT >> token)
@@ -371,85 +454,77 @@ private:
       g.VN.insert(token);
 
     g.S = inputS->text().trimmed().toStdString();
-    if (g.S.empty()) {
-      QMessageBox::warning(this, "Внимание", "Стартовый символ не указан.");
-      return;
-    }
 
-    // Парсинг правил
     if (!parseRules(inputRules->toPlainText().toStdString(), g, errorMsg)) {
-      QMessageBox::critical(this, "Ошибка парсинга",
-                            QString::fromStdString(errorMsg));
+      showError(errorMsg);
       return;
     }
 
     size_t k = spinK->value();
-
-    // Парсинг альфы
-    Rule alpha;
+    Chain alpha;
     std::stringstream ssAlpha(inputAlpha->text().toStdString());
     while (ssAlpha >> token)
       alpha.push_back(token);
 
-    if (alpha.empty()) {
-      QMessageBox::warning(this, "Внимание", "Введите цепочку α.");
-      return;
-    }
-
-    // Вывод лога парсинга на вторую вкладку
-    QString logStr = "<b>Распознанная грамматика G:</b><br><br>";
-    logStr += "<b>V<sub>T</sub></b> = { ";
-    for (const auto &t : g.VT)
-      logStr += QString::fromStdString(t) + " ";
-    logStr += "}<br>";
-
-    logStr += "<b>V<sub>N</sub></b> = { ";
-    for (const auto &n : g.VN)
-      logStr += QString::fromStdString(n) + " ";
-    logStr += "}<br>";
-
-    logStr += "<b>S</b> = " + QString::fromStdString(g.S) + "<br><br>";
-    logStr += "<b>P (Правила):</b><br>";
-    for (const auto &pair : g.P) {
-      logStr += QString::fromStdString(pair.first) + " &rarr; ";
-      for (size_t i = 0; i < pair.second.size(); ++i) {
-        for (const auto &sym : pair.second[i]) {
-          logStr += QString::fromStdString(sym) + " ";
+    if (alpha.empty() && inputAlpha->text().trimmed().isEmpty()) {
+      // Пустая цепочка
+    } else {
+      for (const auto &sym : alpha) {
+        if (!g.VT.count(sym) && !g.VN.count(sym) && sym != "eps") {
+          showError("Символ '" + sym +
+                    "' в цепочке α не принадлежит алфавиту.");
+          return;
         }
-        if (i < pair.second.size() - 1)
-          logStr += "| ";
       }
-      logStr += "<br>";
     }
+
+    LogicEngine engine(g, k);
+    engine.compute();
+    ChainSet eff_alpha = engine.get_eff_for_alpha(alpha);
+
+    QString logStr =
+        "<h3 style='color: #0d6efd;'>Внутреннее состояние анализатора</h3>";
+    logStr += "<b>Таблица FIRST_k:</b><br><table style='margin-left:10px;'>";
+    for (const auto &n : g.VN) {
+      logStr += "<tr><td style='padding-right:15px;'>FIRST<sub>" +
+                QString::number(k) + "</sub>(" + QString::fromStdString(n) +
+                ")</td>";
+      logStr += "<td>= { " + printChainSet(engine.FIRST[n]) + " }</td></tr>";
+    }
+    logStr += "</table><br>";
+
+    logStr +=
+        "<b>Таблица базовых EFF_k:</b><br><table style='margin-left:10px;'>";
+    for (const auto &n : g.VN) {
+      logStr += "<tr><td style='padding-right:15px;'>EFF<sub>" +
+                QString::number(k) + "</sub>(" + QString::fromStdString(n) +
+                ")</td>";
+      logStr += "<td>= { " + printChainSet(engine.EFF[n]) + " }</td></tr>";
+    }
+    logStr += "</table>";
     textLog->setHtml(logStr);
 
-    // Вычисление EFF
-    SymbolSet eff_set = get_EFF(alpha, g, k);
+    QString resultHtml = "<div style='font-family: \"Segoe UI\", sans-serif; "
+                         "font-size: 16px; margin: 20px;'>";
+    resultHtml += "Определение функции завершено.<br><br>";
 
-    // Вывод результата на первую вкладку (форматировано)
-    QString resultHtml =
-        "<div style='font-family: monospace; color: #212529;'>";
-    resultHtml +=
-        QString("<span style='color: #0d6efd;'><b>EFF<sub>%1</sub>( ").arg(k);
-    for (size_t i = 0; i < alpha.size(); ++i) {
-      resultHtml +=
-          QString::fromStdString(alpha[i]) + (i == alpha.size() - 1 ? "" : " ");
-    }
-    resultHtml += " )</b></span> = { ";
-
-    if (eff_set.empty()) {
-      resultHtml += "&empty;";
-    } else {
-      bool first = true;
-      for (const auto &sym : eff_set) {
-        if (!first)
-          resultHtml += ", ";
-        resultHtml += "<span style='color: #198754; font-weight: bold;'>" +
-                      QString::fromStdString(sym) + "</span>";
-        first = false;
+    QString alphaStr;
+    if (alpha.empty())
+      alphaStr = "&epsilon;";
+    else {
+      for (size_t i = 0; i < alpha.size(); ++i) {
+        alphaStr += QString::fromStdString(alpha[i]) +
+                    (i == alpha.size() - 1 ? "" : " ");
       }
     }
-    resultHtml += " }</div>";
+
+    resultHtml += QString("<span style='color: #0d6efd; font-size: "
+                          "20px;'><b>EFF<sub>%1</sub>( %2 )</b></span> = <span "
+                          "style='font-size: 20px;'>{ ")
+                      .arg(k)
+                      .arg(alphaStr);
+    resultHtml += printChainSet(eff_alpha);
+    resultHtml += " }</span></div>";
 
     textResult->setHtml(resultHtml);
   }
