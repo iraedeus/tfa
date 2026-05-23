@@ -1,0 +1,2 @@
+set(__QT_DEPLOY_TARGET_PostmanGUI_FILE /home/iraedeus/Projects/tfa/chinese_postman/PostmanGUI)
+set(__QT_DEPLOY_TARGET_PostmanGUI_TYPE EXECUTABLE)
